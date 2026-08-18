@@ -1,0 +1,6 @@
+cookies.json
+mstokens.json
+chrome_profile/
+signin_log.txt
+__pycache__/
+*.pyc
