@@ -17,6 +17,14 @@ EXPR_LIB = r'''window.__jj = {
     }
     return null;
   },
+  listBtns: function() {
+    var out = [];
+    document.querySelectorAll('button').forEach(function(e) {
+      var t = (e.textContent || '').trim();
+      if (t) out.push(t.slice(0, 20));
+    });
+    return out;
+  },
   toast: function() {
     var els = document.querySelectorAll('[class*=toast]');
     for (var i = 0; i < els.length; i++) {
@@ -29,13 +37,15 @@ EXPR_LIB = r'''window.__jj = {
     var out = [];
     document.querySelectorAll('button').forEach(function(e) {
       var t = (e.textContent || '').trim();
-      if (t && /签到|抽奖|抽一|宝箱|券|矿石/.test(t)) out.push(t.slice(0, 20));
+      if (t && /签到|抽奖|抽一|宝箱|券|矿石|兑换/.test(t)) out.push(t.slice(0, 20));
     });
     return out;
   },
-  dismiss: function() {
-    var b = window.__jj.findBtn(['我知道了']);
-    if (b) { b.el.click(); return 'dismissed'; }
+  dismissRisk: function() {
+    var bs = document.querySelectorAll('button');
+    for (var i = 0; i < bs.length; i++) {
+      if ((bs[i].textContent || '').indexOf('我知道了') >= 0) { bs[i].click(); return 'dismissed'; }
+    }
     return 'none';
   },
   todayStatus: function() {
@@ -68,6 +78,7 @@ class Session:
     def __init__(self, url):
         self.ws = websocket.create_connection(url, timeout=60)
         self.mid = 0
+        self.resp = {}
 
     def send(self, method, params=None):
         self.mid += 1
@@ -77,12 +88,14 @@ class Session:
             if msg.get('id') == self.mid:
                 return msg.get('result', {})
 
-    def pump(self, t):
+    def pump(self, t, on_msg=None):
         self.ws.settimeout(0.05)
         t0 = time.time()
         while time.time() - t0 < t:
             try:
-                json.loads(self.ws.recv())
+                msg = json.loads(self.ws.recv())
+                if on_msg:
+                    on_msg(msg)
             except Exception:
                 pass
         self.ws.settimeout(None)
@@ -91,20 +104,45 @@ class Session:
         r = self.send('Runtime.evaluate', {'expression': expr, 'returnByValue': True, 'awaitPromise': await_p})
         return r.get('result', {}).get('value')
 
+def net_capture(s):
+    pending = {}
+    def on_msg(msg):
+        m = msg.get('method')
+        if m == 'Network.responseReceived':
+            url = msg['params']['response']['url']
+            if 'api.juejin.cn' in url and any(k in url for k in ('check_in', 'lottery/draw')):
+                pending[msg['params']['requestId']] = url
+        elif m == 'Network.loadingFinished':
+            rid = msg['params']['requestId']
+            if rid in pending:
+                try:
+                    body = s.send('Network.getResponseBody', {'requestId': rid}).get('body', '')
+                    url = pending.pop(rid)
+                    s.resp[url.split('?')[0].split('/')[-1]] = body[:500]
+                except Exception:
+                    pending.pop(rid, None)
+    return on_msg
+
 def click(s, keys):
     keys_json = json.dumps(keys)
     return s.evl('(function(){var b = window.__jj.findBtn(%s); if (b) { b.el.click(); return "clicked:" + b.txt; } return "none"})()' % keys_json)
 
-def wait_panel(s, tries=3):
-    for i in range(tries):
-        s.pump(8)
+def prepare(s, headless):
+    s.send('Page.enable')
+    s.send('Network.enable')
+    s.send('Runtime.enable')
+    s.send('Page.navigate', {'url': 'https://juejin.cn/user/center/signin'})
+    s.pump(15)
+    btns = None
+    for i in range(3):
+        s.evl(EXPR_LIB)
+        s.evl('window.__jj.dismissRisk()')
+        s.pump(7)
         btns = s.evl('window.__jj.panelBtns()')
         if btns:
             return btns
-        print(f'  panel empty (try {i+1}/{tries}), reloading...')
         s.send('Page.reload')
         s.pump(10)
-        s.evl('window.__jj.dismiss()')
     return None
 
 def main():
@@ -116,17 +154,24 @@ def main():
             print('FATAL: chrome cdp not up')
             sys.exit(1)
         s = Session(url)
-        s.send('Page.enable')
-        s.send('Runtime.enable')
-        s.send('Page.navigate', {'url': 'https://juejin.cn/user/center/signin'})
-        s.pump(11)
-        s.evl(EXPR_LIB)
-        s.evl('window.__jj.dismiss()')
-
-        btns = wait_panel(s)
+        on_msg = net_capture(s)
+        btns = prepare(s, headless)
         if not btns:
-            print('FATAL: 签到组件未渲染（可能被风控降级），稍后再试')
-            sys.exit(2)
+            if headless:
+                print('headless 被风控拦截，自动切换到有头模式...')
+                p.terminate()
+                subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
+                time.sleep(2)
+                p, url = run_chrome(False)
+                if not url:
+                    print('FATAL: chrome cdp not up (headed)')
+                    sys.exit(1)
+                s = Session(url)
+                on_msg = net_capture(s)
+                btns = prepare(s, False)
+            if not btns:
+                print('FATAL: 签到组件未渲染（可能被风控降级），稍后再试')
+                sys.exit(2)
         print('panel:', btns)
 
         done = False
@@ -136,26 +181,54 @@ def main():
             done = True
 
         if not done:
+            s.pump(8, on_msg)
             r = click(s, ['立即签到', '签到'])
             print('click checkin:', r)
             if r and r.startswith('clicked'):
-                s.pump(5)
-            toast = s.evl('window.__jj.toast()')
-            print('toast:', toast)
-            r2 = s.evl('window.__jj.todayStatus()', await_p=True)
-            if r2 and '"check_in_done":true' in r2:
-                print('RESULT: 签到成功')
+                s.pump(6, on_msg)
+            if 'check_in' in s.resp:
+                print('check_in rsp:', s.resp['check_in'])
+                if '"err_no":0' in s.resp['check_in']:
+                    print('RESULT: 签到成功!')
+                else:
+                    print('RESULT:', s.resp['check_in'][:200])
             else:
-                print('RESULT: 签到结果待确认:', (toast or '无提示'))
+                print('RESULT: 未捕获到 check_in 响应')
 
         r = click(s, ['去抽奖', '抽奖', '抽一次'])
-        print('click lottery:', r)
+        print('click lottery_link:', r)
         if r and r.startswith('clicked'):
-            s.pump(8)
-        toast2 = s.evl('window.__jj.toast()')
-        print('toast2:', toast2)
-        if toast2:
-            print('RESULT: 抽奖结果:', toast2)
+            s.pump(6, on_msg)
+            href = s.evl('location.href') or ''
+            print('href:', href)
+            if '/lottery' not in href:
+                s.send('Page.navigate', {'url': 'https://juejin.cn/user/center/lottery?from=sign_in_success'})
+                s.pump(10, on_msg)
+            s.evl('window.__jj.dismissRisk()')
+            s.pump(2, on_msg)
+            r2 = s.evl('''(function(){
+              var els = document.querySelectorAll('.turntable-item.lottery');
+              for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || '').trim();
+                if (t.indexOf('单抽') >= 0) { els[i].click(); return 'clicked:单抽'; }
+              }
+              return 'none';
+            })()''')
+            print('click draw:', r2)
+            if r2 and '单抽' in r2:
+                s.pump(6, on_msg)
+        if 'draw' in s.resp:
+            print('draw rsp:', s.resp['draw'][:300])
+            try:
+                j = json.loads(s.resp['draw'])
+                if j.get('err_no') == 0:
+                    print('RESULT: 抽奖成功，获得', j.get('data', {}).get('lottery_name', '?'))
+                else:
+                    print('RESULT:', j.get('err_msg', '')[:100])
+            except Exception:
+                print('RESULT: draw 响应解析失败')
+        else:
+            print('RESULT: 未捕获到 draw 请求（可能今日次数已用完，弹提示未发请求）')
     finally:
         if p:
             p.terminate()
