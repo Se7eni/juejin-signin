@@ -210,12 +210,16 @@ def main():
               var els = document.querySelectorAll('.turntable-item.lottery');
               for (var i = 0; i < els.length; i++) {
                 var t = (els[i].textContent || '').trim();
-                if (t.indexOf('单抽') >= 0) { els[i].click(); return 'clicked:单抽'; }
+                if (t.indexOf('免费') >= 0 || t.indexOf('单抽') >= 0) {
+                  els[i].click();
+                  return 'clicked:' + t.slice(0, 10);
+                }
               }
+              if (els.length > 0) { els[0].click(); return 'clicked:first-lottery'; }
               return 'none';
             })()''')
             print('click draw:', r2)
-            if r2 and '单抽' in r2:
+            if r2 and 'clicked' in r2:
                 s.pump(6, on_msg)
         if 'draw' in s.resp:
             print('draw rsp:', s.resp['draw'][:300])
