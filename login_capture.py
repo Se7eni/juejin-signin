@@ -1,4 +1,4 @@
-import subprocess, time, json, io, sys, shutil
+import subprocess, time, json, io, sys, shutil, os
 import websocket, urllib.request
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -51,7 +51,7 @@ while poll < 300:
     jj = [c for c in cookies if 'juejin.cn' in c.get('domain', '') or 'bytedance.com' in c.get('domain', '')]
     sid = [c for c in jj if c.get('name') in ('sessionid', 'sessionid_ss', 'sid_tt') and c.get('value')]
     if sid:
-        with open(r'C:\Users\dell\AppData\Local\Temp\opencode\cookies.json', 'w', encoding='utf-8') as f:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json'), 'w', encoding='utf-8') as f:
             json.dump(cookies, f, ensure_ascii=False, indent=1)
         names = sorted({c['name'] for c in jj})
         print('!!! 已检测到登录态: sessionid =', sid[0]['value'][:12], '...')
