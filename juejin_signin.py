@@ -54,8 +54,6 @@ EXPR_LIB = r'''window.__jj = {
 };'''
 
 def run_chrome(headless):
-    subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
-    time.sleep(1)
     args = [CHROME, f'--remote-debugging-port={PORT}', f'--user-data-dir={PROFILE}',
             '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*',
             '--window-size=1600,900']
@@ -73,6 +71,19 @@ def run_chrome(headless):
             pass
         time.sleep(0.2)
     return p, None
+
+def stop_chrome(p):
+    """只关闭本脚本启动的 Chrome 进程树，不影响用户正在使用的 Chrome。"""
+    if not p or p.poll() is not None:
+        return
+    subprocess.run(
+        ['taskkill', '/F', '/T', '/PID', str(p.pid)],
+        capture_output=True,
+    )
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 class Session:
     def __init__(self, url):
@@ -159,8 +170,7 @@ def main():
         if not btns:
             if headless:
                 print('headless 被风控拦截，自动切换到有头模式...')
-                p.terminate()
-                subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
+                stop_chrome(p)
                 time.sleep(2)
                 p, url = run_chrome(False)
                 if not url:
@@ -234,9 +244,7 @@ def main():
         else:
             print('RESULT: 未捕获到 draw 请求（可能今日次数已用完，弹提示未发请求）')
     finally:
-        if p:
-            p.terminate()
-        subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
+        stop_chrome(p)
 
 if __name__ == '__main__':
     main()
